@@ -1,0 +1,65 @@
+import com.atlassian.jira.component.ComponentAccessor
+import groovy.json.JsonSlurper
+import groovy.json.JsonBuilder
+
+// Set up the Monday.com API endpoint and authentication details
+def apiUrl = 'https://api.monday.com/v2'
+def apiKey = 'your_api_key_here'
+
+// Set up the Jira project key and issue types
+def projectKey = 'your_project_key_here'
+def epicIssueType = 'Epic'
+def taskIssueType = 'Task'
+def subTaskIssueType = 'Sub-task'
+
+// Get the Jira Project object
+def project = ComponentAccessor.getProjectManager().getProjectObjByKey(projectKey)
+
+// Get the Jira Issue Type objects
+def epicIssueTypeObject = ComponentAccessor.getConstantsManager().getIssueTypeObject(epicIssueType)
+def taskIssueTypeObject = ComponentAccessor.getConstantsManager().getIssueTypeObject(taskIssueType)
+def subTaskIssueTypeObject = ComponentAccessor.getConstantsManager().getIssueTypeObject(subTaskIssueType)
+
+// Call the Monday.com API to get the board's items and categories
+def boardId = 'your_board_id_here'
+def boardResponse = new URL(apiUrl + "/boards/${boardId}?columns=name,id,settings").getText(requestProperties: ['Authorization': apiKey])
+def boardJsonSlurper = new JsonSlurper()
+def boardResult = boardJsonSlurper.parseText(boardResponse)
+
+// Loop through the board's categories and create Epics for each one
+boardResult.data.board.columns.forEach { column ->
+    if (column.settings.labels.length == 1) { // Only create an Epic if the category has a single label
+        def epicSummary = column.title
+        def epicDescription = "Imported from Monday.com category ${column.title}"
+
+        def epicInputParameters = ComponentAccessor.getIssueService().newIssueInputParameters()
+        epicInputParameters.setProjectId(project.id)
+        epicInputParameters.setIssueTypeId(epicIssueTypeObject.id)
+        epicInputParameters.setSummary(epicSummary)
+        epicInputParameters.setDescription(epicDescription)
+
+        def epicResult = ComponentAccessor.getIssueService().create(ComponentAccessor.getJiraAuthenticationContext().getLoggedInUser(), epicInputParameters)
+
+        // Loop through the items in the category and create Tasks for each one
+        column.settings.ids.forEach { itemId ->
+            def itemResponse = new URL(apiUrl + "/items/${itemId}?fields=name,column_values").getText(requestProperties: ['Authorization': apiKey])
+            def itemJsonSlurper = new JsonSlurper()
+            def itemResult = itemJsonSlurper.parseText(itemResponse)
+
+            def taskSummary = itemResult.data.name
+            def taskDescription = itemResult.data.column_values.find { it.title == 'Description' }?.text
+
+            def taskInputParameters = ComponentAccessor.getIssueService().newIssueInputParameters()
+            taskInputParameters.setProjectId(project.id)
+            taskInputParameters.setIssueTypeId(taskIssueTypeObject.id)
+            taskInputParameters.setSummary(taskSummary)
+            taskInputParameters.setDescription(taskDescription)
+
+            def taskResult = ComponentAccessor.getIssueService().create(ComponentAccessor.getJiraAuthenticationContext().getLoggedInUser(), taskInputParameters)
+
+            // Loop through the subtasks in the item and create Sub-tasks for each one
+            itemResult.data.column_values.find { it.title == 'Subtasks' }?.value?.forEach { subtask ->
+                def subTaskSummary = subtask.name
+                def subTaskDescription = subtask.column_values.find { it.title == 'Description' }?.text
+
+                def sub
